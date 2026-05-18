@@ -22,4 +22,10 @@ export interface MotoState {
   maintenance: MaintenanceRecord[];
   lastMaintenanceKm: number;
   monthlyGoal?: number;
+  primaryColor?: string;
+  tripMeters?: {
+    a: number;
+    b: number;
+    c: number;
+  };
 }

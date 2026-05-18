@@ -30,6 +30,6 @@
   }
   
   .status-label {
-    @apply text-moto-muted text-[10px] uppercase tracking-[0.2em] font-bold mb-1;
+    @apply text-moto-muted text-[11px] uppercase tracking-[0.2em] font-bold mb-1;
   }
 }
