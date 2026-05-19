@@ -212,77 +212,84 @@ export default function App() {
   React.useEffect(() => {
     let watchId: number | null = null;
 
-    if (activeTrip && activeTrip.status === 'active') {
-      // Re-request wake lock if we recovered an active trip from storage
-      if (!wakeLockRef.current) {
-        requestWakeLock();
+    const startWatching = (highAccuracy: boolean = true) => {
+      if (!('geolocation' in navigator)) {
+        setTrackingError('GPS: Não suportado');
+        return;
       }
 
-      if ('geolocation' in navigator) {
-        watchId = navigator.geolocation.watchPosition(
-          (position) => {
-            const { latitude: lat, longitude: lng, accuracy } = position.coords;
-            const now = Date.now();
+      watchId = navigator.geolocation.watchPosition(
+        (position) => {
+          const { latitude: lat, longitude: lng, accuracy } = position.coords;
+          const now = Date.now();
 
-            // Ignore very low accuracy points if they are too far from reality
-            if (accuracy > 100) {
-              setTrackingError('GPS: Baixa Precisão...');
-              return;
-            }
+          // Ignore very low accuracy points if they are too far from reality
+          if (accuracy > 150) {
+            setTrackingError('GPS: Precisão Baixa (' + Math.round(accuracy) + 'm)');
+            return;
+          }
+          
+          setTrackingError(null);
+
+          setActiveTrip(prev => {
+            if (!prev) return null;
             
-            setTrackingError(null);
-
-            setActiveTrip(prev => {
-              if (!prev) return null;
-              
-              const lastPoint = prev.points[prev.points.length - 1];
-              
-              if (!lastPoint) {
-                return {
-                  ...prev,
-                  points: [{ lat, lng, timestamp: now }]
-                };
-              }
-
-              const dist = calculateDistance(lastPoint.lat, lastPoint.lng, lat, lng);
-              // Filter out jitter. If accuracy is 10m, we should maybe be a bit careful.
-              // Motorcycles move fast, so > 3 meters is a safe bet.
-              const threshold = accuracy > 30 ? 0.015 : 0.003; 
-
-              if (dist < threshold) return prev;
-
-              // Update persistent trip meters in global state
-              setState(s => ({
-                ...s,
-                tripMeters: {
-                  a: (s.tripMeters?.a || 0) + dist,
-                  b: (s.tripMeters?.b || 0) + dist,
-                  c: (s.tripMeters?.c || 0) + dist,
-                }
-              }));
-
+            const lastPoint = prev.points[prev.points.length - 1];
+            
+            if (!lastPoint) {
               return {
                 ...prev,
-                distance: prev.distance + dist,
-                points: [...prev.points, { lat, lng, timestamp: now }]
+                points: [{ lat, lng, timestamp: now }]
               };
-            });
-          },
-          (error) => {
-            console.error('Geolocation error:', error);
-            if (error.code === 1) {
-              setTrackingError('GPS: Permissão Negada (Habilite GPS)');
-            } else if (error.code === 3) {
-              setTrackingError('GPS: Timeout (Sinal Fraco)');
-            } else {
-              setTrackingError('GPS: Erro de Sinal');
             }
-          },
-          { enableHighAccuracy: true, timeout: 15000, maximumAge: 3000 }
-        );
-      } else {
-        setTrackingError('GPS: Não suportado');
-      }
+
+            const dist = calculateDistance(lastPoint.lat, lastPoint.lng, lat, lng);
+            // Dynamic threshold based on accuracy
+            const threshold = accuracy > 50 ? 0.02 : (accuracy > 20 ? 0.01 : 0.005); 
+
+            if (dist < threshold) return prev;
+
+            // Update persistent trip meters in global state
+            setState(s => ({
+              ...s,
+              tripMeters: {
+                a: (s.tripMeters?.a || 0) + dist,
+                b: (s.tripMeters?.b || 0) + dist,
+                c: (s.tripMeters?.c || 0) + dist,
+              }
+            }));
+
+            return {
+              ...prev,
+              distance: prev.distance + dist,
+              points: [...prev.points, { lat, lng, timestamp: now }]
+            };
+          });
+        },
+        (error) => {
+          console.error('Geolocation error:', error);
+          if (error.code === 1) {
+            setTrackingError('GPS: Sem Permissão');
+          } else if (error.code === 3 && highAccuracy) {
+            // If high accuracy timeout, try low accuracy
+            console.log('High accuracy timeout, trying low accuracy...');
+            if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+            startWatching(false);
+          } else {
+            setTrackingError('GPS: Erro ' + error.code);
+          }
+        },
+        { 
+          enableHighAccuracy: highAccuracy, 
+          timeout: highAccuracy ? 10000 : 20000, 
+          maximumAge: 5000 
+        }
+      );
+    };
+
+    if (activeTrip && activeTrip.status === 'active') {
+      if (!wakeLockRef.current) requestWakeLock();
+      startWatching(true);
     }
 
     return () => {
@@ -302,22 +309,28 @@ export default function App() {
 
   // Request location on mount to ensure permissions are handled early
   React.useEffect(() => {
-    if ('geolocation' in navigator) {
-      navigator.geolocation.getCurrentPosition(
-        () => {
-          console.log('Location access granted');
-          setTrackingError(null);
-        },
-        (err) => {
-          console.warn('Initial location check failed:', err);
-          if (err.code === 1) setTrackingError('GPS: Permissão Negada');
-          else if (err.code === 2) setTrackingError('GPS: Posição Indisponível');
-          else if (err.code === 3) setTrackingError('GPS: Tempo Esgotado');
-          else setTrackingError('GPS: Erro de Sinal');
-        },
-        { enableHighAccuracy: true, timeout: 10000 }
-      );
-    }
+    const checkLocation = (highAccuracy = true) => {
+      if ('geolocation' in navigator) {
+        navigator.geolocation.getCurrentPosition(
+          () => {
+            console.log('Location access granted');
+            setTrackingError(null);
+          },
+          (err) => {
+            console.warn('Initial location check failed:', err);
+            if (err.code === 1) setTrackingError('GPS: Sem Permissão');
+            else if (err.code === 3 && highAccuracy) {
+              checkLocation(false); // Fallback to low accuracy
+            } else {
+              setTrackingError('GPS: Aguardando Sinal...');
+            }
+          },
+          { enableHighAccuracy: highAccuracy, timeout: 5000 }
+        );
+      }
+    };
+    
+    checkLocation(true);
 
     // Wake lock recovery on visibility change
     const handleVisibilityChange = () => {
@@ -354,40 +367,44 @@ export default function App() {
       audioContextRef.current.resume();
     }
 
-    // Proactively request geolocation on click to ensure prompt
     if ('geolocation' in navigator) {
-      setTrackingError('GPS: Solicitando...');
-      navigator.geolocation.getCurrentPosition(
-        () => {
-          setTrackingError(null);
-          requestWakeLock();
-          
-          const target = parseFloat(targetKmInput);
-          const newTrip: Trip = {
-            id: crypto.randomUUID(),
-            startTime: Date.now(),
-            distance: 0,
-            targetDistance: !isNaN(target) && target > 0 ? target : undefined,
-            points: [],
-            status: 'active',
-          };
-          setActiveTrip(newTrip);
-          setAlertTriggered(false);
-        },
-        (error) => {
-          console.error('Initial permission error:', error);
-          if (error.code === 1) {
-            setTrackingError('GPS: Permissão Negada (Habilite no navegador)');
-          } else if (error.code === 2) {
-            setTrackingError('GPS: Posição Indisponível');
-          } else if (error.code === 3) {
-            setTrackingError('GPS: Tempo Esgotado (Tente novamente)');
-          } else {
-            setTrackingError('GPS: Erro de inicialização');
-          }
-        },
-        { enableHighAccuracy: true, timeout: 10000 }
-      );
+      setTrackingError('GPS: Ativando...');
+      
+      const onSuccess = () => {
+        setTrackingError(null);
+        requestWakeLock();
+        
+        const target = parseFloat(targetKmInput);
+        const newTrip: Trip = {
+          id: crypto.randomUUID(),
+          startTime: Date.now(),
+          distance: 0,
+          targetDistance: !isNaN(target) && target > 0 ? target : undefined,
+          points: [],
+          status: 'active',
+        };
+        setActiveTrip(newTrip);
+        setAlertTriggered(false);
+      };
+
+      const onError = (error: GeolocationPositionError) => {
+        console.error('Start trip location error:', error);
+        if (error.code === 3) {
+          // If timeout, start anyway and let watchPosition handle it
+          setTrackingError('GPS: Buscando Sinal...');
+          onSuccess();
+        } else if (error.code === 1) {
+          setTrackingError('GPS: Sem Permissão');
+          alert('Por favor, habilite a localização no seu navegador para usar o rastreador.');
+        } else {
+          setTrackingError('GPS: Erro de Início');
+        }
+      };
+
+      navigator.geolocation.getCurrentPosition(onSuccess, onError, { 
+        enableHighAccuracy: true, 
+        timeout: 5000 
+      });
     } else {
       setTrackingError('GPS: Não suportado');
     }
