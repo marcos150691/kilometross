@@ -290,6 +290,48 @@ export default function App() {
     }
   }, [activeTrip?.distance, activeTrip?.targetDistance, alertTriggered]);
 
+  // Request location on mount to ensure permissions are handled early
+  React.useEffect(() => {
+    if ('geolocation' in navigator) {
+      navigator.geolocation.getCurrentPosition(
+        () => console.log('Location access granted'),
+        (err) => {
+          console.warn('Initial location check failed:', err);
+          if (err.code === 1) setTrackingError('GPS: Permissão Negada');
+        },
+        { enableHighAccuracy: true, timeout: 5000 }
+      );
+    }
+
+    // Wake lock recovery on visibility change
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && activeTrip?.status === 'active') {
+        requestWakeLock();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
+    // Unlock audio on first click anywhere
+    const unlockAudio = () => {
+      if (!audioContextRef.current) {
+        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      }
+      if (audioContextRef.current.state === 'suspended') {
+        audioContextRef.current.resume();
+      }
+      window.removeEventListener('click', unlockAudio);
+      window.removeEventListener('touchstart', unlockAudio);
+    };
+    window.addEventListener('click', unlockAudio);
+    window.addEventListener('touchstart', unlockAudio);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('click', unlockAudio);
+      window.removeEventListener('touchstart', unlockAudio);
+    };
+  }, []);
+
   const startTrip = async () => {
     // Unlock audio on user interaction
     if (audioContextRef.current?.state === 'suspended') {
@@ -480,10 +522,16 @@ export default function App() {
                   trackingError ? "bg-red-500 shadow-[0_0_8px_#ef4444]" : 
                   (activeTrip && activeTrip.points.length > 0) ? "bg-moto-primary shadow-[0_0_8px_var(--color-moto-primary)]" : "bg-yellow-500 shadow-[0_0_8px_#f59e0b]"
                 )}></div>
-                <span className="font-mono text-[9px] sm:text-[11px] tracking-widest uppercase text-moto-muted whitespace-nowrap">
-                  {trackingError ? 'GPS: Erro' : 
-                   (activeTrip && activeTrip.points.length === 0 && activeTrip.status === 'active') ? 'GPS: Local...' : 'GPS: OK'}
-                </span>
+                <button 
+                  onClick={() => {
+                    // Manual trigger to request permission if it was denied or bugged
+                    navigator.geolocation.getCurrentPosition(() => setTrackingError(null));
+                  }}
+                  className="font-mono text-[9px] sm:text-[11px] tracking-widest uppercase text-moto-muted whitespace-nowrap hover:text-white transition-colors"
+                >
+                  {trackingError ? `Erro: ${trackingError}` : 
+                   (activeTrip && activeTrip.points.length === 0 && activeTrip.status === 'active') ? 'GPS: Localizando...' : 'GPS: Sinal OK'}
+                </button>
               </div>
               <h1 className="text-[10px] sm:text-sm font-black uppercase tracking-[0.2em] sm:tracking-[0.3em] text-white leading-none">Kilometros</h1>
             </div>
@@ -564,7 +612,7 @@ export default function App() {
           </div>
 
           <div className="mt-8 sm:mt-16 grid grid-cols-1 sm:grid-cols-3 gap-6 sm:gap-16 border-t border-moto-border pt-8 sm:pt-16">
-            <div className="relative group">
+            <div className="relative group bg-moto-surface/30 p-4 -m-4 sm:bg-transparent sm:p-0 sm:m-0">
               <p className="text-moto-muted text-[10px] sm:text-xs uppercase tracking-widest mb-2 sm:mb-3 font-bold flex items-center gap-2">
                 Trip {selectedTripMeter.toUpperCase()}
                 <button 
@@ -580,16 +628,54 @@ export default function App() {
                 </span>
                 <span className="text-sm sm:text-2xl text-moto-muted">KM</span>
               </div>
-              <button 
-                onClick={() => {
-                  if (confirm(`Resetar Trip ${selectedTripMeter.toUpperCase()}?`)) {
-                    resetTripMeter(selectedTripMeter);
-                  }
-                }}
-                className="mt-1 sm:mt-2 text-[9px] sm:text-[10px] uppercase font-bold text-red-500/50 hover:text-red-500 transition-colors"
-              >
-                Reset
-              </button>
+              
+              {!activeTrip ? (
+                <div className="mt-6 space-y-4 border-t border-moto-border/30 pt-4">
+                  <div className="flex flex-wrap gap-1.5">
+                    {[5, 10, 20, 50].map(val => (
+                      <button 
+                        key={val}
+                        onClick={() => setTargetKmInput(val.toString())}
+                        className={cn(
+                          "px-2 py-1 text-[10px] font-mono border transition-all uppercase",
+                          targetKmInput === val.toString() 
+                            ? "bg-moto-primary text-black border-moto-primary font-bold" 
+                            : "border-moto-border text-moto-muted"
+                        )}
+                      >
+                        {val}k
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input 
+                      type="number"
+                      placeholder="Meta"
+                      value={targetKmInput}
+                      onChange={(e) => setTargetKmInput(e.target.value)}
+                      className="bg-moto-bg border border-moto-border text-xs w-20 px-2 py-2 font-mono focus:outline-none focus:border-moto-primary transition-all text-right"
+                    />
+                    <button 
+                      onClick={startTrip}
+                      className="flex-1 bg-moto-primary text-black font-black uppercase tracking-[0.1em] text-[10px] py-2 hover:opacity-90 active:scale-95 transition-all shadow-[0_0_15px_var(--color-moto-primary)] flex items-center justify-center gap-2"
+                    >
+                      <Play className="w-3 h-3 fill-black" />
+                      <span>Iniciar</span>
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button 
+                  onClick={() => {
+                    if (confirm(`Resetar Trip ${selectedTripMeter.toUpperCase()}?`)) {
+                      resetTripMeter(selectedTripMeter);
+                    }
+                  }}
+                  className="mt-1 sm:mt-2 text-[9px] sm:text-[10px] uppercase font-bold text-red-500/50 hover:text-red-500 transition-colors"
+                >
+                  Reset
+                </button>
+              )}
             </div>
 
             {activeTrip?.targetDistance && (
@@ -845,77 +931,25 @@ export default function App() {
         <div className="flex items-center space-x-3 sm:space-x-12 w-full sm:w-auto justify-between sm:justify-end">
           <div className="flex flex-col items-end hidden lg:flex">
             <span className="text-[11px] uppercase text-moto-muted tracking-widest font-bold">Status</span>
-            <span className="font-mono text-sm font-bold">{activeTrip ? 'Rastreando' : 'Pronto'}</span>
+            <span className="font-mono text-sm font-bold tracking-tight">{activeTrip ? 'RASTREAMENTO ATIVO' : 'SISTEMA PRONTO'}</span>
           </div>
           
-          {!activeTrip ? (
-            <div className="flex flex-col gap-2 sm:gap-3 w-full sm:w-auto">
-              <div className="flex items-center justify-end gap-1.5 sm:gap-2 overflow-x-auto no-scrollbar">
-                {[5, 10, 20, 50, 100].map(val => (
-                  <button 
-                    key={val}
-                    type="button"
-                    onClick={() => setTargetKmInput(val.toString())}
-                    className={cn(
-                      "flex-shrink-0 px-2 sm:px-3 py-1 sm:py-1.5 text-[9px] sm:text-[11px] font-mono border transition-all duration-200 uppercase tracking-tighter",
-                      targetKmInput === val.toString() 
-                        ? "bg-moto-primary text-black border-moto-primary font-bold shadow-[0_0_8px_var(--color-moto-primary)]" 
-                        : "border-moto-border text-moto-muted"
-                    )}
-                  >
-                    {val}k
-                  </button>
-                ))}
-                <button 
-                  type="button"
-                  onClick={() => setTargetKmInput('')}
-                  className={cn(
-                    "flex-shrink-0 px-2 sm:px-3 py-1 sm:py-1.5 text-[9px] sm:text-[11px] font-mono border border-moto-border text-moto-muted uppercase tracking-tighter",
-                    targetKmInput === '' && "opacity-50"
-                  )}
-                >
-                  off
-                </button>
-              </div>
-              
-              <div className="flex items-center gap-2 sm:gap-3 justify-end">
-                <div className="flex flex-col items-end shrink-0">
-                  <div className="relative">
-                    <input 
-                      type="number"
-                      placeholder="Meta"
-                      value={targetKmInput}
-                      onChange={(e) => setTargetKmInput(e.target.value)}
-                      className="bg-moto-surface border border-moto-border text-xs sm:text-sm w-20 sm:w-36 px-2 sm:px-3 py-2 sm:py-2.5 font-mono focus:outline-none focus:border-moto-primary transition-all text-right pr-6 sm:pr-8"
-                    />
-                    <span className="absolute right-1.5 sm:right-2 top-1/2 -translate-y-1/2 text-[9px] sm:text-[10px] text-moto-muted font-mono uppercase">km</span>
-                  </div>
-                </div>
-                <button 
-                  onClick={startTrip}
-                  className="h-10 sm:h-16 px-4 sm:px-14 bg-moto-primary text-black font-black uppercase tracking-[0.1em] sm:tracking-[0.2em] text-[10px] sm:text-sm hover:opacity-90 active:scale-95 transition-all shadow-[0_0_20px_var(--color-moto-primary)] flex items-center gap-2 sm:gap-3 whitespace-nowrap"
-                >
-                  <Play className="w-4 h-4 sm:w-5 h-5 fill-black" />
-                  <span>Iniciar</span>
-                </button>
-              </div>
-            </div>
-          ) : (
+          {activeTrip && (
             <div className="flex items-center gap-4 sm:gap-6 w-full sm:w-auto justify-between sm:justify-end">
-              {activeTrip.targetDistance && (
-                <div className="flex flex-col items-end">
-                  <span className="text-[9px] sm:text-xs uppercase text-moto-primary tracking-widest font-bold">Progresso</span>
-                  <div className="flex items-baseline gap-1.5 sm:gap-2">
-                    <span className={cn(
-                      "font-mono text-lg sm:text-2xl font-black",
-                      alertTriggered ? "text-red-500 animate-pulse" : "text-white"
-                    )}>
-                      {((activeTrip.distance / activeTrip.targetDistance) * 100).toFixed(0)}%
-                    </span>
+              <div className="flex flex-col items-end">
+                <span className="text-[9px] sm:text-xs uppercase text-moto-primary tracking-widest font-bold">Progresso</span>
+                <div className="flex items-baseline gap-1.5 sm:gap-2">
+                  <span className={cn(
+                    "font-mono text-lg sm:text-2xl font-black",
+                    alertTriggered ? "text-red-500 animate-pulse" : "text-white"
+                  )}>
+                    {activeTrip.targetDistance ? ((activeTrip.distance / activeTrip.targetDistance) * 100).toFixed(0) : '—'}%
+                  </span>
+                  {activeTrip.targetDistance && (
                     <span className="text-[10px] sm:text-sm text-moto-muted font-mono whitespace-nowrap">/ {activeTrip.targetDistance}k</span>
-                  </div>
+                  )}
                 </div>
-              )}
+              </div>
               <button 
                 onClick={stopTrip}
                 className="h-10 sm:h-16 px-6 sm:px-16 bg-red-500 text-white font-black uppercase tracking-[0.1em] sm:tracking-[0.2em] text-[10px] sm:text-base hover:opacity-90 active:scale-95 transition-all shadow-[0_0_20px_rgba(239,68,68,0.4)] flex items-center gap-2 sm:gap-3"
