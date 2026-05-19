@@ -223,13 +223,15 @@ export default function App() {
           const { latitude: lat, longitude: lng, accuracy } = position.coords;
           const now = Date.now();
 
-          // Ignore very low accuracy points if they are too far from reality
-          if (accuracy > 150) {
+          // Ignore extremely poor accuracy points (usually IP-based, > 1500m)
+          if (accuracy > 1500) {
             setTrackingError('GPS: Precisão Baixa (' + Math.round(accuracy) + 'm)');
             return;
+          } else if (accuracy > 150) {
+            setTrackingError('GPS: Sinal Fraco (' + Math.round(accuracy) + 'm)');
+          } else {
+            setTrackingError(null);
           }
-          
-          setTrackingError(null);
 
           setActiveTrip(prev => {
             if (!prev) return null;
@@ -244,8 +246,8 @@ export default function App() {
             }
 
             const dist = calculateDistance(lastPoint.lat, lastPoint.lng, lat, lng);
-            // Dynamic threshold based on accuracy
-            const threshold = accuracy > 50 ? 0.02 : (accuracy > 20 ? 0.01 : 0.005); 
+            // Dynamic threshold based on accuracy to prevent browser testing / stationary jitter
+            const threshold = accuracy > 300 ? 0.15 : (accuracy > 100 ? 0.05 : (accuracy > 50 ? 0.02 : (accuracy > 20 ? 0.01 : 0.003))); 
 
             if (dist < threshold) return prev;
 
@@ -389,15 +391,15 @@ export default function App() {
 
       const onError = (error: GeolocationPositionError) => {
         console.error('Start trip location error:', error);
-        if (error.code === 3) {
-          // If timeout, start anyway and let watchPosition handle it
-          setTrackingError('GPS: Buscando Sinal...');
-          onSuccess();
-        } else if (error.code === 1) {
+        if (error.code === 1) {
           setTrackingError('GPS: Sem Permissão');
           alert('Por favor, habilite a localização no seu navegador para usar o rastreador.');
         } else {
-          setTrackingError('GPS: Erro de Início');
+          // If timeout, position unavailable or other starting warning,
+          // go ahead and start the trip, logging "Buscando Sinal...". The background watchPosition
+          // task will lock onto the coordinates as soon as they become available.
+          setTrackingError('GPS: Buscando Sinal...');
+          onSuccess();
         }
       };
 
@@ -427,6 +429,35 @@ export default function App() {
       trips: [completedTrip, ...prev.trips],
     }));
     setActiveTrip(null);
+  };
+
+  const simulateMovement = () => {
+    if (!activeTrip) return;
+    const increment = 1.0;
+    
+    // Update active trip distance
+    setActiveTrip(prev => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        distance: prev.distance + increment,
+        points: [...prev.points, { 
+          lat: prev.points[prev.points.length - 1]?.lat || -23.5505, 
+          lng: prev.points[prev.points.length - 1]?.lng || -46.6333, 
+          timestamp: Date.now() 
+        }]
+      };
+    });
+
+    // Update global state trip meters
+    setState(s => ({
+      ...s,
+      tripMeters: {
+        a: (s.tripMeters?.a || 0) + increment,
+        b: (s.tripMeters?.b || 0) + increment,
+        c: (s.tripMeters?.c || 0) + increment,
+      }
+    }));
   };
 
   const deleteTrip = (id: string) => {
@@ -556,7 +587,8 @@ export default function App() {
               <div className="flex items-center space-x-2">
                 <div className={cn(
                   "w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full transition-shadow duration-500",
-                  trackingError ? "bg-red-500 shadow-[0_0_8px_#ef4444]" : 
+                  trackingError === 'GPS: Sem Permissão' || trackingError?.startsWith('GPS: Erro') ? "bg-red-500 shadow-[0_0_8px_#ef4444]" : 
+                  (trackingError?.includes('Fraco') || trackingError?.includes('Sinal') || trackingError?.includes('Buscando') || trackingError?.includes('Localizando')) ? "bg-yellow-500 shadow-[0_0_8px_#f59e0b] animate-pulse" :
                   (activeTrip && activeTrip.points.length > 0) ? "bg-moto-primary shadow-[0_0_8px_var(--color-moto-primary)]" : "bg-yellow-500 shadow-[0_0_8px_#f59e0b]"
                 )}></div>
                 <button 
@@ -566,7 +598,7 @@ export default function App() {
                   }}
                   className="font-mono text-[9px] sm:text-[11px] tracking-widest uppercase text-moto-muted whitespace-nowrap hover:text-white transition-colors"
                 >
-                  {trackingError ? `Erro: ${trackingError}` : 
+                  {trackingError ? trackingError : 
                    (activeTrip && activeTrip.points.length === 0 && activeTrip.status === 'active') ? 'GPS: Localizando...' : 'GPS: Sinal OK'}
                 </button>
               </div>
@@ -702,16 +734,25 @@ export default function App() {
                   </div>
                 </div>
               ) : (
-                <button 
-                  onClick={() => {
-                    if (confirm(`Resetar Trip ${selectedTripMeter.toUpperCase()}?`)) {
-                      resetTripMeter(selectedTripMeter);
-                    }
-                  }}
-                  className="mt-1 sm:mt-2 text-[9px] sm:text-[10px] uppercase font-bold text-red-500/50 hover:text-red-500 transition-colors"
-                >
-                  Reset
-                </button>
+                <div className="flex gap-4 items-center mt-1 sm:mt-2">
+                  <button 
+                    onClick={() => {
+                      if (confirm(`Resetar Trip ${selectedTripMeter.toUpperCase()}?`)) {
+                        resetTripMeter(selectedTripMeter);
+                      }
+                    }}
+                    className="text-[9px] sm:text-[10px] uppercase font-bold text-red-500/50 hover:text-red-500 transition-colors"
+                  >
+                    Reset
+                  </button>
+                  <button 
+                    onClick={simulateMovement}
+                    className="text-[9px] sm:text-[10px] uppercase font-bold text-moto-primary hover:text-white transition-colors"
+                    title="Simular movimento adicionando +1.0 KM"
+                  >
+                    ⚡ Simular +1.0 KM
+                  </button>
+                </div>
               )}
             </div>
 
