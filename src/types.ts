@@ -23,6 +23,7 @@ export interface MotoState {
   lastMaintenanceKm: number;
   monthlyGoal?: number;
   primaryColor?: string;
+  muteAlert?: boolean;
   tripMeters?: {
     a: number;
     b: number;
