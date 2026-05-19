@@ -44,22 +44,27 @@ const THEME_COLORS = [
 
 export default function App() {
   const [state, setState] = React.useState<MotoState>(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    const data = saved ? JSON.parse(saved) : initialState;
-    // Migration: ensure monthlyGoal exists
-    if (data && typeof data.monthlyGoal === 'undefined') {
-      data.monthlyGoal = initialState.monthlyGoal;
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      const data = saved ? JSON.parse(saved) : initialState;
+      // Migration: ensure monthlyGoal exists
+      if (data && typeof data.monthlyGoal === 'undefined') {
+        data.monthlyGoal = initialState.monthlyGoal;
+      }
+      if (data && !data.primaryColor) {
+        data.primaryColor = initialState.primaryColor;
+      }
+      if (data && !data.tripMeters) {
+        data.tripMeters = initialState.tripMeters;
+      }
+      if (typeof data.muteAlert === 'undefined') {
+        data.muteAlert = false;
+      }
+      return data;
+    } catch (e) {
+      console.error('Failed to parse storage', e);
+      return initialState;
     }
-    if (data && !data.primaryColor) {
-      data.primaryColor = initialState.primaryColor;
-    }
-    if (data && !data.tripMeters) {
-      data.tripMeters = initialState.tripMeters;
-    }
-    if (typeof data.muteAlert === 'undefined') {
-      data.muteAlert = false;
-    }
-    return data;
   });
 
   const [activeTrip, setActiveTrip] = React.useState<Trip | null>(null);
@@ -175,9 +180,14 @@ export default function App() {
 
   // Watch for active trip in local storage for crash recovery
   React.useEffect(() => {
-    const savedActive = localStorage.getItem('active_trip');
-    if (savedActive) {
-      setActiveTrip(JSON.parse(savedActive));
+    try {
+      const savedActive = localStorage.getItem('active_trip');
+      if (savedActive) {
+        setActiveTrip(JSON.parse(savedActive));
+      }
+    } catch (e) {
+      console.error('Failed to parse active trip', e);
+      localStorage.removeItem('active_trip');
     }
   }, []);
 
@@ -294,12 +304,18 @@ export default function App() {
   React.useEffect(() => {
     if ('geolocation' in navigator) {
       navigator.geolocation.getCurrentPosition(
-        () => console.log('Location access granted'),
+        () => {
+          console.log('Location access granted');
+          setTrackingError(null);
+        },
         (err) => {
           console.warn('Initial location check failed:', err);
           if (err.code === 1) setTrackingError('GPS: Permissão Negada');
+          else if (err.code === 2) setTrackingError('GPS: Posição Indisponível');
+          else if (err.code === 3) setTrackingError('GPS: Tempo Esgotado');
+          else setTrackingError('GPS: Erro de Sinal');
         },
-        { enableHighAccuracy: true, timeout: 5000 }
+        { enableHighAccuracy: true, timeout: 10000 }
       );
     }
 
@@ -362,11 +378,15 @@ export default function App() {
           console.error('Initial permission error:', error);
           if (error.code === 1) {
             setTrackingError('GPS: Permissão Negada (Habilite no navegador)');
+          } else if (error.code === 2) {
+            setTrackingError('GPS: Posição Indisponível');
+          } else if (error.code === 3) {
+            setTrackingError('GPS: Tempo Esgotado (Tente novamente)');
           } else {
             setTrackingError('GPS: Erro de inicialização');
           }
         },
-        { enableHighAccuracy: true, timeout: 5000 }
+        { enableHighAccuracy: true, timeout: 10000 }
       );
     } else {
       setTrackingError('GPS: Não suportado');
