@@ -251,16 +251,6 @@ export default function App() {
 
             if (dist < threshold) return prev;
 
-            // Update persistent trip meters in global state
-            setState(s => ({
-              ...s,
-              tripMeters: {
-                a: (s.tripMeters?.a || 0) + dist,
-                b: (s.tripMeters?.b || 0) + dist,
-                c: (s.tripMeters?.c || 0) + dist,
-              }
-            }));
-
             return {
               ...prev,
               distance: prev.distance + dist,
@@ -278,13 +268,13 @@ export default function App() {
             if (watchId !== null) navigator.geolocation.clearWatch(watchId);
             startWatching(false);
           } else {
-            setTrackingError('GPS: Erro ' + error.code);
+            setTrackingError('GPS: Erro de sinal (' + error.code + ')');
           }
         },
         { 
           enableHighAccuracy: highAccuracy, 
-          timeout: highAccuracy ? 10000 : 20000, 
-          maximumAge: 5000 
+          timeout: highAccuracy ? 8000 : 15000, 
+          maximumAge: 0 // Force fresh GPS coordinates rather than cached ones
         }
       );
     };
@@ -298,6 +288,31 @@ export default function App() {
       if (watchId !== null) navigator.geolocation.clearWatch(watchId);
     };
   }, [activeTrip?.status === 'active']);
+
+  // Sync active trip distance changes to global trip meters in real-time
+  const lastLoggedDistanceRef = React.useRef<number>(0);
+
+  React.useEffect(() => {
+    if (!activeTrip) {
+      lastLoggedDistanceRef.current = 0;
+      return;
+    }
+
+    const currentDistance = activeTrip.distance;
+    const delta = currentDistance - lastLoggedDistanceRef.current;
+    
+    if (delta > 0.0001) {
+      setState(s => ({
+        ...s,
+        tripMeters: {
+          a: (s.tripMeters?.a || 0) + delta,
+          b: (s.tripMeters?.b || 0) + delta,
+          c: (s.tripMeters?.c || 0) + delta,
+        }
+      }));
+      lastLoggedDistanceRef.current = currentDistance;
+    }
+  }, [activeTrip?.distance, activeTrip?.id]);
 
   // Check for target distance
   React.useEffect(() => {
@@ -369,44 +384,51 @@ export default function App() {
       audioContextRef.current.resume();
     }
 
+    // Start the trip instantly!
+    requestWakeLock();
+    
+    const target = parseFloat(targetKmInput);
+    const newTrip: Trip = {
+      id: crypto.randomUUID(),
+      startTime: Date.now(),
+      distance: 0,
+      targetDistance: !isNaN(target) && target > 0 ? target : undefined,
+      points: [],
+      status: 'active',
+    };
+    
+    setActiveTrip(newTrip);
+    setAlertTriggered(false);
+    setTrackingError('GPS: Buscando Sinal...');
+
+    // Asynchronously fetch initial position to warm up standard APIs
     if ('geolocation' in navigator) {
-      setTrackingError('GPS: Ativando...');
-      
-      const onSuccess = () => {
-        setTrackingError(null);
-        requestWakeLock();
-        
-        const target = parseFloat(targetKmInput);
-        const newTrip: Trip = {
-          id: crypto.randomUUID(),
-          startTime: Date.now(),
-          distance: 0,
-          targetDistance: !isNaN(target) && target > 0 ? target : undefined,
-          points: [],
-          status: 'active',
-        };
-        setActiveTrip(newTrip);
-        setAlertTriggered(false);
-      };
-
-      const onError = (error: GeolocationPositionError) => {
-        console.error('Start trip location error:', error);
-        if (error.code === 1) {
-          setTrackingError('GPS: Sem Permissão');
-          alert('Por favor, habilite a localização no seu navegador para usar o rastreador.');
-        } else {
-          // If timeout, position unavailable or other starting warning,
-          // go ahead and start the trip, logging "Buscando Sinal...". The background watchPosition
-          // task will lock onto the coordinates as soon as they become available.
-          setTrackingError('GPS: Buscando Sinal...');
-          onSuccess();
-        }
-      };
-
-      navigator.geolocation.getCurrentPosition(onSuccess, onError, { 
-        enableHighAccuracy: true, 
-        timeout: 5000 
-      });
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          setTrackingError(null);
+          const { latitude: lat, longitude: lng } = position.coords;
+          setActiveTrip(prev => {
+            if (!prev) return null;
+            if (prev.points.length === 0) {
+              return {
+                ...prev,
+                points: [{ lat, lng, timestamp: Date.now() }]
+              };
+            }
+            return prev;
+          });
+        },
+        (error) => {
+          console.warn('Initial warm-up location check failed:', error);
+          if (error.code === 1) {
+            setTrackingError('GPS: Sem Permissão');
+            alert('Por favor, ative a permissão de localização no seu navegador.');
+          } else {
+            setTrackingError('GPS: Localizando...');
+          }
+        },
+        { enableHighAccuracy: true, timeout: 5000 }
+      );
     } else {
       setTrackingError('GPS: Não suportado');
     }
@@ -435,7 +457,8 @@ export default function App() {
     if (!activeTrip) return;
     const increment = 1.0;
     
-    // Update active trip distance
+    // Update active trip distance. The reactive useEffect sync automatically
+    // intercepts this change and increments trip meters A, B, and C in the global state.
     setActiveTrip(prev => {
       if (!prev) return null;
       return {
@@ -448,16 +471,6 @@ export default function App() {
         }]
       };
     });
-
-    // Update global state trip meters
-    setState(s => ({
-      ...s,
-      tripMeters: {
-        a: (s.tripMeters?.a || 0) + increment,
-        b: (s.tripMeters?.b || 0) + increment,
-        c: (s.tripMeters?.c || 0) + increment,
-      }
-    }));
   };
 
   const deleteTrip = (id: string) => {
