@@ -76,9 +76,75 @@ export default function App() {
   const [alertTriggered, setAlertTriggered] = React.useState(false);
   const [isAlarmRinging, setIsAlarmRinging] = React.useState(false);
 
+  // GPS Solicitation and Activation State
+  const [showLocationModal, setShowLocationModal] = React.useState(false);
+  const [locationStep, setLocationStep] = React.useState<'prompt' | 'requesting' | 'success' | 'error'>('prompt');
+  const [modalErrorMessage, setModalErrorMessage] = React.useState<string>('');
+
   const audioContextRef = React.useRef<AudioContext | null>(null);
   const alarmNodesRef = React.useRef<{ osc: OscillatorNode; gain: GainNode } | null>(null);
   const wakeLockRef = React.useRef<any>(null);
+
+  const triggerGPSPrompt = (highAccuracy: boolean = true) => {
+    if (!('geolocation' in navigator)) {
+      setTrackingError('GPS: Não suportado');
+      setModalErrorMessage('Seu navegador ou dispositivo não suporta Geolocalização GPS.');
+      setLocationStep('error');
+      setShowLocationModal(true);
+      return;
+    }
+
+    setLocationStep('requesting');
+    setShowLocationModal(true);
+    setTrackingError('GPS: Verificando...');
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        console.log('Location success:', position);
+        setTrackingError(null);
+        setLocationStep('success');
+        // Hide modal after 1 second so they see the successful connection
+        setTimeout(() => {
+          setShowLocationModal(false);
+        }, 1200);
+      },
+      (err) => {
+        console.warn('GPS prompt error:', err);
+        setLocationStep('error');
+        if (err.code === 1) {
+          setTrackingError('GPS: Sem Permissão');
+          setModalErrorMessage(
+            'Permissão de Localização Negada! O velocímetro do seu celular precisa de autorização para ler o GPS. Clique em Tentar Novamente para que o navegador peça a permissão.'
+          );
+        } else if (err.code === 2) {
+          setTrackingError('GPS: Posição Indisponível');
+          setModalErrorMessage(
+            'GPS / Localização Desativada no Celular! Deslize a barra de topo do seu smartphone para baixo e ative o botão de "Localização" ou "GPS" nas configurações rápidas do aparelho, depois clique em Tentar Novamente.'
+          );
+        } else if (err.code === 3) {
+          if (highAccuracy) {
+            // Try with low accuracy as secondary option
+            triggerGPSPrompt(false);
+          } else {
+            setTrackingError('GPS: Sem Sinal');
+            setModalErrorMessage(
+              'O sinal do satélite GPS está muito fraco ou em tempo limite. Certifique-se de estar ao ar livre, fora de garagens, subsolos ou áreas cobertas.'
+            );
+          }
+        } else {
+          setTrackingError('GPS: Erro de Entrada');
+          setModalErrorMessage(
+            'Erro ao obter posicionamento. Verifique se o recurso de Localização GPS está ligado no celular.'
+          );
+        }
+      },
+      { 
+        enableHighAccuracy: highAccuracy, 
+        timeout: highAccuracy ? 5000 : 8000, 
+        maximumAge: 0 
+      }
+    );
+  };
 
   const requestWakeLock = async () => {
     try {
@@ -324,26 +390,44 @@ export default function App() {
     }
   }, [activeTrip?.distance, activeTrip?.targetDistance, alertTriggered]);
 
-  // Request location on mount to ensure permissions are handled early
+  // Request location on mount to ensure permissions are handled early and ask for active GPS
   React.useEffect(() => {
     const checkLocation = (highAccuracy = true) => {
       if ('geolocation' in navigator) {
         navigator.geolocation.getCurrentPosition(
           () => {
-            console.log('Location access granted');
+            console.log('Location services active & granted');
             setTrackingError(null);
+            setShowLocationModal(false);
           },
           (err) => {
             console.warn('Initial location check failed:', err);
-            if (err.code === 1) setTrackingError('GPS: Sem Permissão');
-            else if (err.code === 3 && highAccuracy) {
-              checkLocation(false); // Fallback to low accuracy
+            // Open the GPS permission modal on launch if it's disabled or not permitted
+            setShowLocationModal(true);
+            if (err.code === 1) {
+              setTrackingError('GPS: Sem Permissão');
+              setModalErrorMessage(
+                'Permissão de Localização Negada! O velocímetro do seu celular precisa de autorização para ler o GPS. Clique no botão abaixo para ativar.'
+              );
+              setLocationStep('error');
+            } else if (err.code === 2) {
+              setTrackingError('GPS: Posição Indisponível');
+              setModalErrorMessage(
+                'GPS / Localização Desativada no Celular! Certifique-se de ativar "Localização" no seu celular nas configurações rápidas e clique no botão abaixo.'
+              );
+              setLocationStep('error');
             } else {
-              setTrackingError('GPS: Aguardando Sinal...');
+              setTrackingError('GPS: Buscando Sinal...');
+              setModalErrorMessage(
+                'Aguardando sinal GPS ativo no seu celular. Certifique-se de estar ao ar livre e com o GPS ativo.'
+              );
+              setLocationStep('prompt');
             }
           },
-          { enableHighAccuracy: highAccuracy, timeout: 5000 }
+          { enableHighAccuracy: highAccuracy, timeout: 2500 } // Fast check to see if we can get position
         );
+      } else {
+        setTrackingError('GPS: Não suportado');
       }
     };
     
@@ -382,6 +466,12 @@ export default function App() {
     // Unlock audio on user interaction
     if (audioContextRef.current?.state === 'suspended') {
       audioContextRef.current.resume();
+    }
+
+    // Check GPS status. If blocked or unavailable, do not start quietly. Request activation.
+    if (trackingError === 'GPS: Sem Permissão' || trackingError === 'GPS: Posição Indisponível' || !('geolocation' in navigator)) {
+      triggerGPSPrompt(true);
+      return;
     }
 
     // Start the trip instantly!
@@ -572,6 +662,103 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-moto-bg flex flex-col font-sans overflow-x-hidden">
+      <AnimatePresence>
+        {showLocationModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/95 backdrop-blur-md z-[9999] flex items-center justify-center p-4"
+          >
+            <motion.div
+              initial={{ scale: 0.9, y: 30 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.9, y: 30 }}
+              className="bg-moto-surface border-2 border-moto-border max-w-md w-full p-6 sm:p-8 rounded-none shadow-[0_0_50px_rgba(0,0,0,0.8)] relative flex flex-col items-center text-center space-y-6"
+            >
+              <div 
+                className="w-16 h-16 rounded-full flex items-center justify-center animate-pulse"
+                style={{ 
+                  backgroundColor: 'rgba(var(--color-moto-primary-rgb, 204, 255, 0), 0.1)',
+                  border: '2px solid var(--color-moto-primary)'
+                }}
+              >
+                <Navigation className="w-8 h-8 text-moto-primary rotate-45" />
+              </div>
+
+              <div className="space-y-2">
+                <h2 className="text-xl sm:text-2xl font-black uppercase tracking-wider text-white">
+                  {locationStep === 'prompt' && 'Ativar GPS / Localização'}
+                  {locationStep === 'requesting' && 'Sincronizando com Gps...'}
+                  {locationStep === 'success' && 'GPS Conectado!'}
+                  {locationStep === 'error' && 'Erro de Localização GPS'}
+                </h2>
+                <p className="text-xs sm:text-sm text-moto-muted leading-relaxed">
+                  {locationStep === 'prompt' && 'Para que o odômetro registre de verdade os seus quilômetros de moto, o aplicativo precisa de acesso à localização GPS ativa do seu celular.'}
+                  {locationStep === 'requesting' && 'Consultando o hardware de posicionamento no satélite. Certifique-se de que o GPS no painel do celular está ligado.'}
+                  {locationStep === 'success' && 'Sinal OK! O odômetro e velocímetro já estão sincronizados com sua movimentação real.'}
+                  {locationStep === 'error' && modalErrorMessage}
+                </p>
+              </div>
+
+              {locationStep === 'error' && (
+                <div className="bg-red-500/10 border border-red-500/30 p-4 rounded-none w-full text-left space-y-2 text-xs text-red-400">
+                  <p className="font-bold flex items-center gap-1.5 uppercase tracking-wider text-[10px]">
+                    <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span> Como resolver no celular:
+                  </p>
+                  <ul className="list-decimal pl-4 space-y-1.5 text-slate-300">
+                    <li>Arraste o topo da tela do seu celular para baixo para abrir o menu do Android/iOS.</li>
+                    <li>Verifique se o ícone de <strong>"Localização"</strong> ou <strong>"GPS"</strong> está ligado (aceso).</li>
+                    <li>Ao solicitar a permissão pelo navegador, clique em <strong>"Permitir"</strong> ou <strong>"Durante o uso do app"</strong>.</li>
+                    <li>Se puder, fique ao ar livre para que o sinal de satélite chegue com precisão.</li>
+                  </ul>
+                </div>
+              )}
+
+              <div className="w-full flex flex-col gap-2.5">
+                {locationStep === 'prompt' && (
+                  <button
+                    onClick={() => triggerGPSPrompt(true)}
+                    className="w-full bg-moto-primary text-black font-black py-3 sm:py-4 uppercase tracking-widest text-xs sm:text-sm hover:brightness-110 active:scale-[0.98] transition-all cursor-pointer shadow-[0_0_15px_var(--color-moto-primary)]"
+                  >
+                    ATIVAR LOCALIZAÇÃO (GPS)
+                  </button>
+                )}
+
+                {locationStep === 'requesting' && (
+                  <div className="w-full flex flex-col items-center py-2">
+                    <div className="w-8 h-8 border-4 border-moto-primary border-t-transparent rounded-full animate-spin mb-3"></div>
+                    <span className="text-[10px] uppercase font-bold text-moto-primary tracking-widest animate-pulse">Consultando GPS do Aparelho...</span>
+                  </div>
+                )}
+
+                {locationStep === 'success' && (
+                  <div className="w-full bg-moto-primary/20 border-2 border-moto-primary text-moto-primary font-black py-3 sm:py-4 uppercase tracking-widest text-sm text-center">
+                    CONECTADO ✓
+                  </div>
+                )}
+
+                {locationStep === 'error' && (
+                  <button
+                    onClick={() => triggerGPSPrompt(true)}
+                    className="w-full bg-red-600 text-white font-black py-3 sm:py-4 uppercase tracking-widest text-xs sm:text-sm hover:bg-red-700 active:scale-[0.98] transition-all cursor-pointer shadow-[0_0_15px_rgba(239,68,68,0.4)]"
+                  >
+                    SOLICITAR ATIVAÇÃO DE GPS
+                  </button>
+                )}
+
+                <button
+                  onClick={() => setShowLocationModal(false)}
+                  className="w-full text-center text-[10px] sm:text-xs text-moto-muted hover:text-white uppercase font-bold tracking-widest pt-2 hover:underline transition-all cursor-pointer"
+                >
+                  Ver Dashboard Sem GPS (Offline)
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {isAlarmRinging && (
         <motion.div 
           initial={{ y: -100 }}
@@ -606,8 +793,7 @@ export default function App() {
                 )}></div>
                 <button 
                   onClick={() => {
-                    // Manual trigger to request permission if it was denied or bugged
-                    navigator.geolocation.getCurrentPosition(() => setTrackingError(null));
+                    triggerGPSPrompt(true);
                   }}
                   className="font-mono text-[9px] sm:text-[11px] tracking-widest uppercase text-moto-muted whitespace-nowrap hover:text-white transition-colors"
                 >
